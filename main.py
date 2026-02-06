@@ -23,8 +23,9 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=lo
 logger = logging.getLogger(__name__)
 
 # -------------------------------------------------------------------------
-# 0. CONFIG & SERVER SETUP
+# 0. CONFIG & SERVER SETUP (دریافت اطلاعات از سرور Render)
 # -------------------------------------------------------------------------
+# این متغیرها باید در بخش Environment Variables سایت Render وارد شده باشند
 API_ID = int(os.environ.get("TELEGRAM_API_ID"))
 API_HASH = os.environ.get("TELEGRAM_API_HASH")
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -34,25 +35,54 @@ STRING_SESSION = os.environ.get("STRING_SESSION")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 NEWSAPI = os.environ.get("NEWSAPI_KEY")
 
-# لیست کانال‌ها و منابع
-SOURCE_CHANNELS = [
-    "BBCPersian", "RadioFarda", "Tasnimnews", "AlJazeera", "Euronews_Persian", 
-    "KhabarFuri", "voafarsi", "ManotoNews"
-]
+# --- لیست منابع خبری (طبق درخواست شما) ---
 RSS_LINKS = [
+    # 🇨🇳 چین
+    "https://www.scmp.com/rss/91/feed",
+    "https://www.chinadaily.com.cn/rss/china_rss.xml",
+    # 🇮🇷 فارسی
     "https://feeds.bbci.co.uk/persian/rss.xml",
     "https://per.euronews.com/rss",
     "https://www.independentpersian.com/rss.xml",
-    "https://www.aljazeera.net/aljazeerarss/a7c186be-f30b-4b20-8b2a-51ce79d29e6f"
+    # 🇺🇸 آمریکا
+    "http://rss.cnn.com/rss/edition_world.rss",
+    "https://feeds.foxnews.com/foxnews/world",
+    "https://feeds.washingtonpost.com/rss/world",
+    "https://www.cbsnews.com/latest/rss/world",
+    # 🇪🇺 اروپا
+    "https://www.france24.com/en/rss",
+    "https://www.theguardian.com/world/rss",
+    "https://rss.dw.com/xml/rss-en-all",
+    # 🇸🇦/🇶🇦 خاورمیانه
+    "https://www.aljazeera.com/xml/rss/all.xml",
+    # 💰 اقتصاد و تکنولوژی
+    "https://cointelegraph.com/rss",
+    "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664",
+    "https://www.theverge.com/rss/index.xml",
 ]
+
+SOURCE_CHANNELS = [
+    "BBCPersian",
+    "RadioFarda",
+    "Tasnimnews",
+    "deutsch_news1",
+    "khabarfuri",
+    "voafarsi",
+    "ManotoNews"
+]
+
 BLACKLIST = [
-    "@deutsch_news1", "deutsch_news1", "@radiofarda_official", 
-    "BBCPersian", "@TasnimNews", "@KhabarFuri", "join", "عضو شوید",
-    "www.TasnimNews.ir", "لینک عضویت", "کلیک کنید"
+    "@deutsch_news1", "deutsch_news1", "آخرین اخبارفوری آلمان",
+    "@radiofarda_official", "radiofarda_official", "RadioFarda", "@RadioFarda",
+    "@BBCPersian", "BBCPersian",
+    "Tasnimnews", "@TasnimNews", "https://www.TasnimNews.ir", "www.TasnimNews.ir",
+    "@KhabarFuri", "KhabarFuri", "KhabarFuri | اخبار",
+    "عضو شوید", "join", "لینک عضویت", "کلیک کنید"
 ]
+
 NEW_SIGNATURE = "\n\n🚀 <b>NEXUS new | اخبار نکس آس نیوز</b>\n🆔 @newsnew_now"
 
-# --- FLASK SERVER (برای زنده ماندن در Render) ---
+# --- FLASK SERVER (برای زنده ماندن) ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -97,24 +127,24 @@ class CloudMemory:
         return "\n".join([f"- {t}" for t in self.recent_titles])
 
 # -------------------------------------------------------------------------
-# 2. CONTENT CLEANER (CENSORSHIP + SECURITY)
+# 2. CONTENT CLEANER (CENSORSHIP + HTML SAFETY)
 # -------------------------------------------------------------------------
 class ContentCleaner:
     @staticmethod
     def clean_and_sign(text):
         if not text: return ""
         
-        # 1. حذف کلمات لیست سیاه و لینک‌ها
+        # 1. حذف کلمات لیست سیاه
         for bad in BLACKLIST:
             text = re.sub(f"(?i){re.escape(bad)}", "", text)
+        # 2. حذف آیدی‌ها و لینک‌ها
         text = re.sub(r'@\w+', '', text)
         text = re.sub(r'https?://\S+|www\.\S+', '', text)
         
-        # 2. (مهم) ایمن‌سازی متن برای HTML
-        # این خط جلوی ارور Bad Request تلگرام را می‌گیرد
+        # 3. ایمن‌سازی HTML (حیاتی)
         text = html.escape(text)
 
-        # 3. انتخاب ایموجی
+        # 4. انتخاب ایموجی
         emoji = "📰"
         keywords = {
             "جنگ": "⚔️", "حمله": "💥", "انفجار": "💣", "کشته": "⚫️",
@@ -126,7 +156,7 @@ class ContentCleaner:
                 emoji = v
                 break
         
-        # 4. تمیزکاری نهایی
+        # 5. تمیزکاری نهایی
         clean = text.strip()
         while "\n\n\n" in clean: clean = clean.replace("\n\n\n", "\n\n")
         
@@ -149,12 +179,15 @@ class AIAnalyst:
 
     def analyze_web_batch(self, articles_list, recent_tg):
         if not articles_list: return []
+        # تحلیل 5 خبر اول برای سرعت بیشتر
+        limited_list = articles_list[:5]
+        
         prompt = f"""
         ACT AS A NEWS EDITOR.
         IGNORE THESE (ALREADY POSTED): {recent_tg}
         ANALYZE THESE NEW ITEMS:
         """
-        for i, a in enumerate(articles_list):
+        for i, a in enumerate(limited_list):
             prompt += f"--- {i+1} ---\nHEADLINE: {a['title']}\nCONTEXT: {a.get('description','')[:300]}\n"
         prompt += """
         OUTPUT PERSIAN. CHECK DUPLICATES. SHORT & PUNCHY.
@@ -199,7 +232,6 @@ class NexusBot:
     async def telegram_loop(self):
         logger.info("🟢 Cloud Telegram Monitor Started")
         try:
-            # اتصال با String Session (بدون نیاز به لاگین دستی در سرور)
             async with TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH) as client:
                 if not client.is_connected(): await client.connect()
                 
@@ -213,12 +245,10 @@ class NexusBot:
 
                                 unique_id = f"tg_{channel}_{msg.id}"
                                 if not self.memory.is_url_seen(unique_id):
-                                    # تمیزکاری و ایمن‌سازی متن
                                     final_text = ContentCleaner.clean_and_sign(msg.text if msg.text else "")
                                     
                                     try:
                                         if has_media:
-                                            # دانلود و ارسال مدیا
                                             path = await client.download_media(msg, file="temp_media")
                                             if path:
                                                 if path.endswith(('.jpg','.png','.webp')):
@@ -227,19 +257,15 @@ class NexusBot:
                                                     await self.bot.send_video(chat_id=CHANNEL_ID, video=open(path,'rb'), caption=final_text[:1000], parse_mode="HTML")
                                                 else:
                                                     await self.bot.send_document(chat_id=CHANNEL_ID, document=open(path,'rb'), caption=final_text[:1000], parse_mode="HTML")
-                                                
-                                                # حذف فایل موقت (بسیار مهم برای سرور)
                                                 os.remove(path)
                                         else:
-                                            # ارسال متن خالی
                                             await self.bot.send_message(chat_id=CHANNEL_ID, text=final_text, parse_mode="HTML", disable_web_page_preview=True)
                                         
                                         logger.info(f"🚀 Sent: {unique_id}")
                                         self.memory.add_posted_item(unique_id, msg.text)
-                                        await asyncio.sleep(20) # جلوگیری از اسپم
+                                        await asyncio.sleep(20)
                                     except Exception as e:
                                         logger.error(f"Send Error: {e}")
-                                        # پاکسازی در صورت بروز خطا
                                         if os.path.exists("temp_media*"): 
                                             try: os.remove("temp_media*")
                                             except: pass
@@ -264,8 +290,7 @@ class NexusBot:
                     if not an or "DUPLICATE" in an.get('headline','') or an.get('score',0)<4: continue
                     queue.append(self.format_web(an, art))
                 
-                # زمان‌بندی قطره‌چکانی
-                rem = 4320 - (time.time() - start_time)
+                rem = 3600 - (time.time() - start_time) # هر 1 ساعت
                 if rem < 0: rem = 100
                 if queue:
                     interval = rem / len(queue)
@@ -276,7 +301,7 @@ class NexusBot:
                         except: pass
                         await asyncio.sleep(interval)
                 else: await asyncio.sleep(rem)
-            else: await asyncio.sleep(4320)
+            else: await asyncio.sleep(3600)
 
     def fetch_web(self):
         raw = []
@@ -292,7 +317,7 @@ class NexusBot:
         final = []
         for i in raw:
             if i.get('url') and not self.memory.is_url_seen(i['url']): final.append(i)
-        return final[:15]
+        return final[:20]
 
     def format_web(self, an, art):
         cat_e = "💰" if "Econ" in an.get('cat','') else "🌍"
@@ -302,9 +327,7 @@ class NexusBot:
                 f"🔗 <a href='{art['url']}'>مشاهده خبر معتبر</a>{NEW_SIGNATURE}")
 
 if __name__ == "__main__":
-    # اجرای وب‌سرور برای زنده ماندن
     threading.Thread(target=run_web_server).start()
-    
     bot = NexusBot()
     print("NEXUS CLOUD: ONLINE 🌩️")
     loop = asyncio.get_event_loop()
