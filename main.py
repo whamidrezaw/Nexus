@@ -23,7 +23,7 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=lo
 logger = logging.getLogger(__name__)
 
 # -------------------------------------------------------------------------
-# 0. CONFIG & SERVER SETUP (دریافت اطلاعات از سرور)
+# 0. CONFIG & SERVER SETUP
 # -------------------------------------------------------------------------
 API_ID = int(os.environ.get("TELEGRAM_API_ID"))
 API_HASH = os.environ.get("TELEGRAM_API_HASH")
@@ -34,7 +34,7 @@ STRING_SESSION = os.environ.get("STRING_SESSION")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 NEWSAPI = os.environ.get("NEWSAPI_KEY")
 
-# لیست‌های ثابت
+# لیست کانال‌ها و منابع
 SOURCE_CHANNELS = [
     "BBCPersian", "RadioFarda", "Tasnimnews", "AlJazeera", "Euronews_Persian", 
     "KhabarFuri", "voafarsi", "ManotoNews"
@@ -52,7 +52,7 @@ BLACKLIST = [
 ]
 NEW_SIGNATURE = "\n\n🚀 <b>NEXUS new | اخبار نکس آس نیوز</b>\n🆔 @newsnew_now"
 
-# --- FLASK SERVER (برای زنده ماندن) ---
+# --- FLASK SERVER (برای زنده ماندن در Render) ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -97,20 +97,24 @@ class CloudMemory:
         return "\n".join([f"- {t}" for t in self.recent_titles])
 
 # -------------------------------------------------------------------------
-# 2. CONTENT CLEANER (CENSORSHIP)
+# 2. CONTENT CLEANER (CENSORSHIP + SECURITY)
 # -------------------------------------------------------------------------
 class ContentCleaner:
     @staticmethod
     def clean_and_sign(text):
         if not text: return ""
-        # حذف کلمات سیاه
+        
+        # 1. حذف کلمات لیست سیاه و لینک‌ها
         for bad in BLACKLIST:
             text = re.sub(f"(?i){re.escape(bad)}", "", text)
-        # حذف آیدی‌ها و لینک‌ها
         text = re.sub(r'@\w+', '', text)
         text = re.sub(r'https?://\S+|www\.\S+', '', text)
         
-        # ایموجی
+        # 2. (مهم) ایمن‌سازی متن برای HTML
+        # این خط جلوی ارور Bad Request تلگرام را می‌گیرد
+        text = html.escape(text)
+
+        # 3. انتخاب ایموجی
         emoji = "📰"
         keywords = {
             "جنگ": "⚔️", "حمله": "💥", "انفجار": "💣", "کشته": "⚫️",
@@ -122,6 +126,7 @@ class ContentCleaner:
                 emoji = v
                 break
         
+        # 4. تمیزکاری نهایی
         clean = text.strip()
         while "\n\n\n" in clean: clean = clean.replace("\n\n\n", "\n\n")
         
@@ -194,7 +199,7 @@ class NexusBot:
     async def telegram_loop(self):
         logger.info("🟢 Cloud Telegram Monitor Started")
         try:
-            # اتصال با String Session (بدون نیاز به لاگین دستی)
+            # اتصال با String Session (بدون نیاز به لاگین دستی در سرور)
             async with TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH) as client:
                 if not client.is_connected(): await client.connect()
                 
@@ -208,6 +213,7 @@ class NexusBot:
 
                                 unique_id = f"tg_{channel}_{msg.id}"
                                 if not self.memory.is_url_seen(unique_id):
+                                    # تمیزکاری و ایمن‌سازی متن
                                     final_text = ContentCleaner.clean_and_sign(msg.text if msg.text else "")
                                     
                                     try:
@@ -221,16 +227,19 @@ class NexusBot:
                                                     await self.bot.send_video(chat_id=CHANNEL_ID, video=open(path,'rb'), caption=final_text[:1000], parse_mode="HTML")
                                                 else:
                                                     await self.bot.send_document(chat_id=CHANNEL_ID, document=open(path,'rb'), caption=final_text[:1000], parse_mode="HTML")
+                                                
+                                                # حذف فایل موقت (بسیار مهم برای سرور)
                                                 os.remove(path)
                                         else:
-                                            # ارسال متن
+                                            # ارسال متن خالی
                                             await self.bot.send_message(chat_id=CHANNEL_ID, text=final_text, parse_mode="HTML", disable_web_page_preview=True)
                                         
                                         logger.info(f"🚀 Sent: {unique_id}")
                                         self.memory.add_posted_item(unique_id, msg.text)
-                                        await asyncio.sleep(20)
+                                        await asyncio.sleep(20) # جلوگیری از اسپم
                                     except Exception as e:
                                         logger.error(f"Send Error: {e}")
+                                        # پاکسازی در صورت بروز خطا
                                         if os.path.exists("temp_media*"): 
                                             try: os.remove("temp_media*")
                                             except: pass
@@ -255,7 +264,7 @@ class NexusBot:
                     if not an or "DUPLICATE" in an.get('headline','') or an.get('score',0)<4: continue
                     queue.append(self.format_web(an, art))
                 
-                # زمان‌بندی
+                # زمان‌بندی قطره‌چکانی
                 rem = 4320 - (time.time() - start_time)
                 if rem < 0: rem = 100
                 if queue:
@@ -293,7 +302,7 @@ class NexusBot:
                 f"🔗 <a href='{art['url']}'>مشاهده خبر معتبر</a>{NEW_SIGNATURE}")
 
 if __name__ == "__main__":
-    # اجرای وب‌سرور در پس‌زمینه برای UptimeRobot
+    # اجرای وب‌سرور برای زنده ماندن
     threading.Thread(target=run_web_server).start()
     
     bot = NexusBot()
