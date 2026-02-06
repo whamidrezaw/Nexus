@@ -23,7 +23,7 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=lo
 logger = logging.getLogger(__name__)
 
 # -------------------------------------------------------------------------
-# 0. CONFIG & SERVER SETUP (دریافت اطلاعات از سرور Render)
+# 0. CONFIG & SERVER SETUP
 # -------------------------------------------------------------------------
 API_ID = int(os.environ.get("TELEGRAM_API_ID"))
 API_HASH = os.environ.get("TELEGRAM_API_HASH")
@@ -60,14 +60,15 @@ RSS_LINKS = [
     "https://www.theverge.com/rss/index.xml",
 ]
 
+# لیست اصلاح شده (حذف کانال‌های خراب)
 SOURCE_CHANNELS = [
     "BBCPersian",
     "RadioFarda",
     "Tasnimnews",
     "deutsch_news1",
     "khabarfuri",
-    "voafarsi",
-    "ManotoNews"
+    "Euronews_Persian",
+    "AlJazeera"
 ]
 
 BLACKLIST = [
@@ -81,7 +82,7 @@ BLACKLIST = [
 
 NEW_SIGNATURE = "\n\n🚀 <b>NEXUS new | اخبار نکس آس نیوز</b>\n🆔 @newsnew_now"
 
-# --- FLASK SERVER (برای زنده ماندن) ---
+# --- FLASK SERVER ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -93,7 +94,7 @@ def run_web_server():
     app.run(host='0.0.0.0', port=port)
 
 # -------------------------------------------------------------------------
-# 1. CLOUD MEMORY (MONGODB)
+# 1. CLOUD MEMORY
 # -------------------------------------------------------------------------
 class CloudMemory:
     def __init__(self):
@@ -126,24 +127,21 @@ class CloudMemory:
         return "\n".join([f"- {t}" for t in self.recent_titles])
 
 # -------------------------------------------------------------------------
-# 2. CONTENT CLEANER (CENSORSHIP + HTML SAFETY)
+# 2. CONTENT CLEANER
 # -------------------------------------------------------------------------
 class ContentCleaner:
     @staticmethod
     def clean_and_sign(text):
         if not text: return ""
         
-        # 1. حذف کلمات لیست سیاه
         for bad in BLACKLIST:
             text = re.sub(f"(?i){re.escape(bad)}", "", text)
-        # 2. حذف آیدی‌ها و لینک‌ها
         text = re.sub(r'@\w+', '', text)
         text = re.sub(r'https?://\S+|www\.\S+', '', text)
         
-        # 3. ایمن‌سازی HTML (حیاتی)
+        # ایمن‌سازی HTML
         text = html.escape(text)
 
-        # 4. انتخاب ایموجی
         emoji = "📰"
         keywords = {
             "جنگ": "⚔️", "حمله": "💥", "انفجار": "💣", "کشته": "⚫️",
@@ -155,7 +153,6 @@ class ContentCleaner:
                 emoji = v
                 break
         
-        # 5. تمیزکاری نهایی
         clean = text.strip()
         while "\n\n\n" in clean: clean = clean.replace("\n\n\n", "\n\n")
         
@@ -178,7 +175,6 @@ class AIAnalyst:
 
     def analyze_web_batch(self, articles_list, recent_tg):
         if not articles_list: return []
-        # تحلیل 5 خبر اول برای سرعت بیشتر
         limited_list = articles_list[:5]
         
         prompt = f"""
@@ -220,7 +216,18 @@ class AIAnalyst:
         except: return {}
 
 # -------------------------------------------------------------------------
-# 4. NEXUS BOT CORE (OPTIMIZED SPEED & STABILITY)
+# 4. HELPER FUNCTIONS (تابع گمشده شما اینجاست) 👇
+# -------------------------------------------------------------------------
+def final_text_safe(text):
+    """اگر متن طولانی باشد، تگ‌های HTML را حذف می‌کند تا ارور ندهد"""
+    if len(text) > 1000:
+        # حذف تمام تگ‌های HTML برای جلوگیری از نصفه ماندن تگ‌ها
+        clean_text = re.sub(r'<[^>]+>', '', text)
+        return clean_text[:1000] + "..."
+    return text
+
+# -------------------------------------------------------------------------
+# 5. NEXUS BOT CORE
 # -------------------------------------------------------------------------
 class NexusBot:
     def __init__(self):
@@ -235,10 +242,9 @@ class NexusBot:
                 if not client.is_connected(): await client.connect()
                 
                 while True:
-                    # چرخش بین کانال‌ها
                     for channel in SOURCE_CHANNELS:
                         try:
-                            # درخواست پیام‌های جدید (تعداد کم برای فشار کمتر)
+                            # لیمیت 10 برای سرعت و فشار کمتر
                             async for msg in client.iter_messages(channel, limit=10):
                                 has_text = msg.text and len(msg.text) > 10
                                 has_media = msg.media is not None
@@ -252,12 +258,15 @@ class NexusBot:
                                         if has_media:
                                             path = await client.download_media(msg, file="temp_media")
                                             if path:
+                                                # استفاده از تابع امن جدید برای کپشن
+                                                safe_caption = final_text_safe(final_text)
+                                                
                                                 if path.endswith(('.jpg','.png','.webp')):
-                                                    await self.bot.send_photo(chat_id=CHANNEL_ID, photo=open(path,'rb'), caption=final_text[:1000], parse_mode="HTML")
+                                                    await self.bot.send_photo(chat_id=CHANNEL_ID, photo=open(path,'rb'), caption=safe_caption, parse_mode="HTML")
                                                 elif path.endswith(('.mp4','.mov','.avi')):
-                                                    await self.bot.send_video(chat_id=CHANNEL_ID, video=open(path,'rb'), caption=final_text[:1000], parse_mode="HTML")
+                                                    await self.bot.send_video(chat_id=CHANNEL_ID, video=open(path,'rb'), caption=safe_caption, parse_mode="HTML")
                                                 else:
-                                                    await self.bot.send_document(chat_id=CHANNEL_ID, document=open(path,'rb'), caption=final_text[:1000], parse_mode="HTML")
+                                                    await self.bot.send_document(chat_id=CHANNEL_ID, document=open(path,'rb'), caption=safe_caption, parse_mode="HTML")
                                                 os.remove(path)
                                         else:
                                             await self.bot.send_message(chat_id=CHANNEL_ID, text=final_text, parse_mode="HTML", disable_web_page_preview=True)
@@ -275,16 +284,14 @@ class NexusBot:
                                             except: pass
                         
                         except Exception as e:
-                            # مدیریت خطای تایم‌اوت تلگرام (نادیده گرفتن)
                             if "PersistentTimestampOutdatedError" in str(e):
                                 logger.warning(f"⚠️ Telegram Sync Lag on {channel} (Ignored)")
                             else:
                                 logger.error(f"Channel Error ({channel}): {e}")
                         
-                        # استراحت کوتاه بین چک کردن کانال‌ها
+                        # استراحت بین کانال‌ها
                         await asyncio.sleep(15)
 
-                    # استراحت طولانی بعد از چک کردن تمام لیست
                     logger.info("💤 Sleeping for 3 minutes...")
                     await asyncio.sleep(180) 
 
@@ -307,7 +314,6 @@ class NexusBot:
                     if not an or "DUPLICATE" in an.get('headline','') or an.get('score',0)<4: continue
                     queue.append(self.format_web(an, art))
                 
-                # ارسال قطره‌چکانی در طول ۱ ساعت
                 rem = 3600 - (time.time() - start_time) 
                 if rem < 0: rem = 100
                 if queue:
