@@ -28,8 +28,8 @@ CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")
 MONGO_URL = os.environ.get("MONGO_URL")
 STRING_SESSION = os.environ.get("STRING_SESSION")
 
-# --- کانال‌های تلگرامی ---
-SOURCE_CHANNELS = [
+# --- لیست ۱: کانال‌های خبری (رفتار: عکس + متن + سانسور) ---
+NEWS_CHANNELS = [
     "BBCPersian",
     "RadioFarda",
     "Tasnimnews",
@@ -38,6 +38,18 @@ SOURCE_CHANNELS = [
     "KHABAREROOZ_IR"
 ]
 
+# --- لیست ۲: کانال‌های پروکسی (رفتار: فقط استخراج کانفیگ) ---
+PROXY_CHANNELS = [
+    "iProxyem",
+    "Proxymelimon",
+    "famoushaji",
+    "V2rrayVPN",
+    "napsternetv"
+]
+
+# ترکیب همه برای حلقه اصلی
+ALL_CHANNELS = NEWS_CHANNELS + PROXY_CHANNELS
+
 BLACKLIST = [
     # --- کانال‌ها و آیدی‌ها ---
     "@deutsch_news1", "deutsch_news1", "آخرین اخبارفوری آلمان",
@@ -45,29 +57,31 @@ BLACKLIST = [
     "@BBCPersian", "BBCPersian",
     "Tasnimnews", "@TasnimNews",
     "@KhabarFuri", "KhabarFuri", "KhabarFuri | اخبار",
-     "🔴@KHABAREROOZ_IR", "@KHABAREROOZ_IR", "KHABAREROOZ_IR",
-
+    "🔴@KHABAREROOZ_IR", "@KHABAREROOZ_IR", "KHABAREROOZ_IR",
     
     # --- تبلیغات سایت‌ها و لینک‌ها ---
     "https://www.TasnimNews.ir", "www.TasnimNews.ir",
     "سایت تسنیم را در آدرس زیر ببینید:", "▪️سایت تسنیم را در آدرس زیر ببینید:",
     "#درعمق" , "درعمق" , 
-    # --- دعوت به اقدام (Call to Action) ---
+    # --- دعوت به اقدام ---
     "عضو شوید", "join", "لینک عضویت", "کلیک کنید",
 
     # --- کاراکترها و ایموجی‌های اضافه ---
     "📷", "@" , "▪️"
 ]
 
-# ✅ امضای جدید شما
-NEW_SIGNATURE = "\n\n📡 <b>رادار هوشمند اخبار جهان</b>\n🆔 @NewsRadar_hub"
+# ✅ امضای بخش اخبار
+NEWS_SIGNATURE = "\n\n📡 <b>رادار هوشمند اخبار جهان</b>\n🆔 @NewsRadar_hub"
 
-# --- FLASK SERVER (برای زنده ماندن) ---
+# ✅ امضای بخش پروکسی
+PROXY_SIGNATURE = "\n\n🔐 <b>کانفیگ اختصاصی | اتصال امن</b>\n🆔 @NewsRadar_hub"
+
+# --- FLASK SERVER ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "NewsRadar BOT IS ALIVE (TELEGRAM ONLY MODE) 📡"
+    return "NewsRadar BOT IS ALIVE (DUAL MODE: NEWS + PROXY) 📡"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -93,22 +107,18 @@ class CloudMemory:
             return self.collection.find_one({"url": str(url)}) is not None
         return False
 
-    def add_posted_item(self, url, title_snippet):
+    def add_posted_item(self, url, text_snippet):
         if self.collection is not None:
             try:
                 self.collection.insert_one({"url": str(url), "date": time.time()})
             except: pass
-        
-        if title_snippet:
-            clean_title = title_snippet.replace("\n", " ").strip()[:100]
-            self.recent_titles.append(clean_title)
 
 # -------------------------------------------------------------------------
 # 2. CONTENT CLEANER & HELPERS
 # -------------------------------------------------------------------------
 class ContentCleaner:
     @staticmethod
-    def clean_and_sign(text):
+    def clean_news(text):
         if not text: return ""
         
         # حذف کلمات سیاه
@@ -119,7 +129,6 @@ class ContentCleaner:
         text = re.sub(r'@\w+', '', text)
         text = re.sub(r'https?://\S+|www\.\S+', '', text)
         
-        # ایمن‌سازی HTML
         text = html.escape(text)
 
         emoji = "📰"
@@ -139,17 +148,23 @@ class ContentCleaner:
         lines = clean.split('\n')
         if lines: lines[0] = f"<b>{emoji} {lines[0]}</b>"
         
-        return "\n".join(lines) + NEW_SIGNATURE
+        return "\n".join(lines) + NEWS_SIGNATURE
+
+    @staticmethod
+    def extract_configs(text):
+        """استخراج هوشمند کانفیگ‌ها از متن شلوغ"""
+        if not text: return []
+        configs = re.findall(r'(vless://\S+|vmess://\S+|trojan://\S+|ss://\S+)', text)
+        return configs
 
 def final_text_safe(text):
-    """اگر متن طولانی باشد، تگ‌های HTML را حذف می‌کند تا ارور ندهد"""
     if len(text) > 1000:
         clean_text = re.sub(r'<[^>]+>', '', text)
         return clean_text[:1000] + "..."
     return text
 
 # -------------------------------------------------------------------------
-# 3. NEWS RADAR BOT CORE (TELEGRAM ONLY - SLOW MODE)
+# 3. NEWS RADAR BOT CORE
 # -------------------------------------------------------------------------
 class NexusBot:
     def __init__(self):
@@ -157,27 +172,34 @@ class NexusBot:
         self.memory = CloudMemory()
 
     async def telegram_loop(self):
-        logger.info("🟢 NewsRadar Monitor Started (Super Slow Mode 🛡️)")
+        logger.info("🟢 NewsRadar Monitor Started (Dual Mode: News + Proxy 🚀)")
         try:
             async with TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH) as client:
                 if not client.is_connected(): await client.connect()
                 
                 while True:
-                    for channel in SOURCE_CHANNELS:
+                    for channel in ALL_CHANNELS:
                         try:
-                            # لیمیت 5: فشار خیلی کم
+                            # ✅ لیمیت ۱۵ پیام آخر (طبق تنظیمات شما)
                             async for msg in client.iter_messages(channel, limit=15):
-                                has_text = msg.text and len(msg.text) > 10
-                                has_media = msg.media is not None
-                                if not has_text and not has_media: continue
-
                                 unique_id = f"tg_{channel}_{msg.id}"
                                 
-                                if not self.memory.is_url_seen(unique_id):
-                                    final_text = ContentCleaner.clean_and_sign(msg.text if msg.text else "")
+                                if self.memory.is_url_seen(unique_id):
+                                    continue 
+
+                                sent = False
+                                
+                                # =========================================
+                                # 🛑 باند اول: اخبار (News Track)
+                                # =========================================
+                                if channel in NEWS_CHANNELS:
+                                    has_text = msg.text and len(msg.text) > 10
+                                    has_media = msg.media is not None
+                                    if not has_text and not has_media: continue
+
+                                    final_text = ContentCleaner.clean_news(msg.text if msg.text else "")
                                     
                                     try:
-                                        sent = False
                                         if has_media:
                                             path = await client.download_media(msg, file="temp_media")
                                             if path:
@@ -188,37 +210,62 @@ class NexusBot:
                                                     await self.bot.send_video(chat_id=CHANNEL_ID, video=open(path,'rb'), caption=safe_caption, parse_mode="HTML")
                                                 else:
                                                     await self.bot.send_document(chat_id=CHANNEL_ID, document=open(path,'rb'), caption=safe_caption, parse_mode="HTML")
-                                                
                                                 os.remove(path)
                                                 sent = True
                                         else:
                                             await self.bot.send_message(chat_id=CHANNEL_ID, text=final_text, parse_mode="HTML", disable_web_page_preview=True)
                                             sent = True
-                                        
-                                        if sent:
-                                            logger.info(f"🚀 Sent: {unique_id}")
-                                            self.memory.add_posted_item(unique_id, msg.text)
-                                            # استراحت بعد از پست
-                                            await asyncio.sleep(30)
-
                                     except Exception as e:
-                                        logger.error(f"Send Error: {e}")
+                                        logger.error(f"News Send Error: {e}")
                                         if os.path.exists("temp_media*"): 
                                             try: os.remove("temp_media*")
                                             except: pass
-                        
+
+                                # =========================================
+                                # 🛑 باند دوم: پروکسی (Proxy Track)
+                                # =========================================
+                                elif channel in PROXY_CHANNELS:
+                                    if not msg.text: continue
+                                    
+                                    configs = ContentCleaner.extract_configs(msg.text)
+                                    
+                                    if configs:
+                                        for conf in configs:
+                                            if "vless" in conf: p_type = "VLESS"
+                                            elif "vmess" in conf: p_type = "VMESS"
+                                            elif "trojan" in conf: p_type = "TROJAN"
+                                            else: p_type = "PROXY"
+
+                                            # ساخت پست شیک با قابلیت کپی خودکار
+                                            final_proxy_text = (
+                                                f"🚀 <b>سرور جدید {p_type}</b>\n"
+                                                f"<code>{conf}</code>"
+                                                f"{PROXY_SIGNATURE}"
+                                            )
+                                            try:
+                                                await self.bot.send_message(chat_id=CHANNEL_ID, text=final_proxy_text, parse_mode="HTML")
+                                                sent = True
+                                                await asyncio.sleep(2)
+                                            except Exception as e:
+                                                logger.error(f"Proxy Send Error: {e}")
+
+                                # =========================================
+                                # ✅ پایان پردازش
+                                # =========================================
+                                if sent:
+                                    logger.info(f"🚀 Sent from {channel}: {unique_id}")
+                                    self.memory.add_posted_item(unique_id, msg.text)
+                                    await asyncio.sleep(30)
+
                         except Exception as e:
-                            if "PersistentTimestampOutdatedError" in str(e):
-                                logger.warning(f"⚠️ Telegram Lag on {channel} (Ignored)")
-                            else:
+                            if "PersistentTimestampOutdatedError" not in str(e):
                                 logger.error(f"Channel Error ({channel}): {e}")
                         
-                        # ترمز ۱: ۶۰ ثانیه استراحت بین هر کانال
                         logger.info(f"⏳ Waiting 60s before next channel...")
                         await asyncio.sleep(60)
 
-                    # ترمز ۲: ۲۰ دقیقه خواب بعد از سیکل کامل
-                    logger.info("💤 Cycle finished. Sleeping for 20 minutes...")
+                    # ✅ ۱۰ دقیقه خواب (۶۰۰ ثانیه) بعد از چک کردن کل لیست
+                    logger.info("💤 Cycle finished. Sleeping for 10 minutes...")
                     await asyncio.sleep(600)
 
         except Exception as e:
@@ -226,12 +273,7 @@ class NexusBot:
 
 if __name__ == "__main__":
     threading.Thread(target=run_web_server).start()
-    
     bot = NexusBot()
     print("NewsRadar CLOUD: ONLINE 📡")
-    
     loop = asyncio.get_event_loop()
     loop.run_until_complete(bot.telegram_loop())
-
-
-
