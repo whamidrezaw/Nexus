@@ -5,6 +5,7 @@ import asyncio
 import html
 import re
 import threading
+import random  # ✅ اضافه شد برای مخلوط کردن کانال‌ها
 from collections import deque
 
 import pymongo
@@ -28,7 +29,7 @@ CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")
 MONGO_URL = os.environ.get("MONGO_URL")
 STRING_SESSION = os.environ.get("STRING_SESSION")
 
-# --- لیست ۱: کانال‌های خبری (رفتار: عکس + متن + سانسور) ---
+# --- لیست ۱: کانال‌های خبری ---
 NEWS_CHANNELS = [
     "BBCPersian",
     "RadioFarda",
@@ -38,7 +39,7 @@ NEWS_CHANNELS = [
     "KHABAREROOZ_IR"
 ]
 
-# --- لیست ۲: کانال‌های پروکسی (رفتار: فقط استخراج کانفیگ) ---
+# --- لیست ۲: کانال‌های پروکسی ---
 PROXY_CHANNELS = [
     "iProxyem",
     "Proxymelimon",
@@ -46,9 +47,6 @@ PROXY_CHANNELS = [
     "V2rrayVPN",
     "napsternetv"
 ]
-
-# ترکیب همه برای حلقه اصلی
-ALL_CHANNELS = NEWS_CHANNELS + PROXY_CHANNELS
 
 BLACKLIST = [
     # --- کانال‌ها و آیدی‌ها ---
@@ -81,7 +79,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "NewsRadar BOT IS ALIVE (DUAL MODE: NEWS + PROXY) 📡"
+    return "NewsRadar BOT IS ALIVE (TURBO MODE: SHUFFLED) 🚀"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -92,7 +90,6 @@ def run_web_server():
 # -------------------------------------------------------------------------
 class CloudMemory:
     def __init__(self):
-        self.recent_titles = deque(maxlen=50)
         try:
             self.client = pymongo.MongoClient(MONGO_URL)
             self.db = self.client['nexus_db']
@@ -121,14 +118,11 @@ class ContentCleaner:
     def clean_news(text):
         if not text: return ""
         
-        # حذف کلمات سیاه
         for bad in BLACKLIST:
             text = re.sub(f"(?i){re.escape(bad)}", "", text)
         
-        # حذف آیدی‌ها و لینک‌ها
         text = re.sub(r'@\w+', '', text)
         text = re.sub(r'https?://\S+|www\.\S+', '', text)
-        
         text = html.escape(text)
 
         emoji = "📰"
@@ -152,7 +146,6 @@ class ContentCleaner:
 
     @staticmethod
     def extract_configs(text):
-        """استخراج هوشمند کانفیگ‌ها از متن شلوغ"""
         if not text: return []
         configs = re.findall(r'(vless://\S+|vmess://\S+|trojan://\S+|ss://\S+)', text)
         return configs
@@ -172,16 +165,21 @@ class NexusBot:
         self.memory = CloudMemory()
 
     async def telegram_loop(self):
-        logger.info("🟢 NewsRadar Monitor Started (Dual Mode: News + Proxy 🚀)")
+        logger.info("🟢 NewsRadar Monitor Started (Turbo Shuffle Mode 🌪️)")
         try:
             async with TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH) as client:
                 if not client.is_connected(): await client.connect()
                 
                 while True:
-                    for channel in ALL_CHANNELS:
+                    # ✅ ساخت لیست ترکیبی و مخلوط کردن آن
+                    # هر بار که حلقه اجرا می‌شود، ترتیب کانال‌ها عوض می‌شود
+                    current_batch = NEWS_CHANNELS + PROXY_CHANNELS
+                    random.shuffle(current_batch)
+                    
+                    for channel in current_batch:
                         try:
-                            # ✅ لیمیت ۱۵ پیام آخر (طبق تنظیمات شما)
-                            async for msg in client.iter_messages(channel, limit=15):
+                            # ✅ لیمیت ۱۰ پیام (برای سرعت بیشتر)
+                            async for msg in client.iter_messages(channel, limit=10):
                                 unique_id = f"tg_{channel}_{msg.id}"
                                 
                                 if self.memory.is_url_seen(unique_id):
@@ -190,7 +188,7 @@ class NexusBot:
                                 sent = False
                                 
                                 # =========================================
-                                # 🛑 باند اول: اخبار (News Track)
+                                # 🛑 پردازش کانال‌های خبری
                                 # =========================================
                                 if channel in NEWS_CHANNELS:
                                     has_text = msg.text and len(msg.text) > 10
@@ -222,11 +220,10 @@ class NexusBot:
                                             except: pass
 
                                 # =========================================
-                                # 🛑 باند دوم: پروکسی (Proxy Track)
+                                # 🛑 پردازش کانال‌های پروکسی
                                 # =========================================
                                 elif channel in PROXY_CHANNELS:
                                     if not msg.text: continue
-                                    
                                     configs = ContentCleaner.extract_configs(msg.text)
                                     
                                     if configs:
@@ -236,7 +233,6 @@ class NexusBot:
                                             elif "trojan" in conf: p_type = "TROJAN"
                                             else: p_type = "PROXY"
 
-                                            # ساخت پست شیک با قابلیت کپی خودکار
                                             final_proxy_text = (
                                                 f"🚀 <b>سرور جدید {p_type}</b>\n"
                                                 f"<code>{conf}</code>"
@@ -245,7 +241,7 @@ class NexusBot:
                                             try:
                                                 await self.bot.send_message(chat_id=CHANNEL_ID, text=final_proxy_text, parse_mode="HTML")
                                                 sent = True
-                                                await asyncio.sleep(2)
+                                                await asyncio.sleep(1) # وقفه خیلی کوتاه
                                             except Exception as e:
                                                 logger.error(f"Proxy Send Error: {e}")
 
@@ -255,18 +251,21 @@ class NexusBot:
                                 if sent:
                                     logger.info(f"🚀 Sent from {channel}: {unique_id}")
                                     self.memory.add_posted_item(unique_id, msg.text)
-                                    await asyncio.sleep(30)
+                                    # ✅ فقط ۵ ثانیه استراحت بعد از پست (برای سرعت بیشتر)
+                                    await asyncio.sleep(5)
 
                         except Exception as e:
                             if "PersistentTimestampOutdatedError" not in str(e):
                                 logger.error(f"Channel Error ({channel}): {e}")
                         
-                        logger.info(f"⏳ Waiting 60s before next channel...")
-                        await asyncio.sleep(60)
+                        # ✅ فقط ۱۰ ثانیه استراحت بین کانال‌ها (بجای ۶۰ ثانیه)
+                        # این سرعت جابجایی بین کانال‌ها را ۶ برابر می‌کند
+                        logger.info(f"⏳ Waiting 10s before next channel...")
+                        await asyncio.sleep(10)
 
-                    # ✅ ۱۰ دقیقه خواب (۶۰۰ ثانیه) بعد از چک کردن کل لیست
-                    logger.info("💤 Cycle finished. Sleeping for 10 minutes...")
-                    await asyncio.sleep(600)
+                    # ✅ فقط ۳ دقیقه خواب کل سیستم (بجای ۱۰ دقیقه)
+                    logger.info("💤 Cycle finished. Sleeping for 3 minutes (Turbo Mode)...")
+                    await asyncio.sleep(180)
 
         except Exception as e:
             logger.error(f"CRITICAL: Telegram Login Failed! Error: {e}")
