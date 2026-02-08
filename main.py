@@ -1,34 +1,29 @@
 """
-NewsRadar v7.0 - Hybrid Free Edition
-Powered by Asyncio Queues & Smart Deduplication
+NewsRadar v7.2 - Enterprise Edition
+Features: Zero-Copy Media (Instant), Smart Queue, Auto-Cleaning
 """
 
 import os
-import sys
-import time
 import asyncio
 import logging
 import re
-import html
 import hashlib
 import random
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Optional, List, Set
+from datetime import datetime, timezone, timedelta
 
 import motor.motor_asyncio
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon import errors
 
-# برای زنده نگه داشتن سرور (اگر وب‌سرور دارید)
+# وب‌سرور برای زنده نگه داشتن در Render
 try:
     from web_server import keep_alive
 except ImportError:
     def keep_alive(): pass
 
 # ============================================================================
-# 1. CONFIGURATION (تنظیمات)
+# 1. CONFIGURATION
 # ============================================================================
 @dataclass(frozen=True)
 class Config:
@@ -39,13 +34,9 @@ class Config:
     MONGO_URI: str
     
     # تنظیمات هوشمند
-    MAX_QUEUE_SIZE: int = 100       # ظرفیت صف داخلی
-    DUPLICATE_TTL: int = 86400 * 3  # حافظه تکراری‌ها (3 روز)
+    MAX_QUEUE_SIZE: int = 200        # افزایش ظرفیت صف
+    DUPLICATE_TTL: int = 86400 * 3   # حافظه تکراری‌ها (3 روز)
     
-   # ==========================
-    # لیست کانال‌ها و تنظیمات تمیزکاری
-    # ==========================
-
     NEWS_CHANNELS: tuple = (
         "BBCPersian", "RadioFarda", "Tasnimnews", 
         "deutsch_news1", "khabarfuri", "KHABAREROOZ_IR"
@@ -56,48 +47,20 @@ class Config:
         "V2rrayVPN", "napsternetv", "v2rayng_vpn"
     )
 
-    # لیست سیاه جامع (Full Cleaning Mode)
-    # تمام این عبارات از متن خبر حذف خواهند شد
     BLACKLIST: tuple = (
-        # 1. حذف کامل هویت کانال‌های مبدا (با تمام حالت‌های نوشتاری)
         "@deutsch_news1", "deutsch_news1", "Deutsch_News1",
-        "@radiofarda_official", "radiofarda_official", "RadioFarda", "radiofarda",
+        "@radiofarda_official", "radiofarda_official", "RadioFarda",
         "@BBCPersian", "BBCPersian", "bbcpersian", "BBC",
-        "Tasnimnews", "@TasnimNews", "TasnimNews", "tasnimnews", "خبرگزاری تسنیم",
+        "Tasnimnews", "@TasnimNews", "خبرگزاری تسنیم",
         "@KhabarFuri", "KhabarFuri", "khabarfuri", "خبر فوری",
-        "🔴@KHABAREROOZ_IR", "@KHABAREROOZ_IR", "KHABAREROOZ_IR", "khabarerooz_ir",
-        "@euronewspe", "euronewspe", "euronews",
+        "KHABAREROOZ_IR", "@KHABAREROOZ_IR", "khabarerooz_ir",
+        "عضو شوید", "لینک عضویت", "join", "Join",
+        "تبلیغ", "vpn", "VPN", "proxy", "فیلترشکن",
+        "اینستاگرام", "youtube", "twitter", "http", "www.",
+        "@", "🆔", "👇", "👉", "pv", "PV"
 
-        # 2. حذف لینک‌های سایت‌های خبری (دقیق)
-        "https://www.TasnimNews.ir", "www.TasnimNews.ir", "TasnimNews.ir",
-        "bbc.com/persian", "radiofarda.com",
-        
-        # 3. حذف دعوت به عضویت (فارسی و انگلیسی)
-        "عضو شوید", "جهت عضویت", "لینک عضویت", "عضویت در کانال", "پیوند عضویت",
-        "join", "Join", "JOIN", "Joing",
-        "کلیک کنید", "Click Here", "click",
-        "دنبال کنید", "Follow", "Sub", "Subscribe",
-        "مشاهده خبر", "ادامه خبر", "مشروح خبر", "جزئیات بیشتر",
 
-        # 4. حذف تبلیغات و اسپم
-        "تبلیغ", "تبلیغات", "رزرو تبلیغ", "ads", "ADS",
-        "سایت شرط بندی", "bet", "Bet", "کازینو", "پوکر", "انفجار", "پیش بینی",
-        "وی پی ان", "فیلترشکن", "vpn", "VPN", "proxy",
-        "خرید", "فروش", "سفارش", "تخفیف", "off", "OFF",
-
-        # 5. حذف شبکه‌های اجتماعی
-        "اینستاگرام", "اینستا", "insta", "Insta", "Instagram",
-        "یوتیوب", "یوتوب", "youtube", "YouTube",
-        "توئیتر", "توییتر", "twitter", "Twitter", "X.com",
-        "فیسبوک", "facebook",
-        "تلگرام", "telegram", "t.me", "https://t.me",
-
-        # 6. حذف کلی لینک‌ها و پسوندها
-        "https://", "http://", "www.",
-        ".ir", ".com", ".net", ".org", ".info",
-
-        # 7. کاراکترها و ایموجی‌های مزاحم (که معمولا اول یا آخر متن هستند)
-        "@", "🆔", "📣", "🔴", "▪️", "👇", "👉", "👈", "⭕️", "⚠️"
+          "@", "🆔", "سایت تسنیم را در آدرس زیر ببینید :", "👉", "pv", "سایت تسنیم را در آدرس زیر ببینید:"
     )
     
     SIG_NEWS = "\n\n📡 <b>رادار اخبار</b>\n🆔 @NewsRadar_hub"
@@ -114,73 +77,66 @@ class Config:
         )
 
 # ============================================================================
-# 2. ADVANCED LOGGING (لاگ‌گیری حرفه‌ای)
+# 2. LOGGING
 # ============================================================================
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
-logger = logging.getLogger("NewsRadar-v7")
+logger = logging.getLogger("NewsRadar-v7.2")
 
 # ============================================================================
-# 3. SMART LOGIC (مغز متفکر)
+# 3. CONTENT ENGINE
 # ============================================================================
 class ContentEngine:
-    """موتور پردازش محتوا با الگوریتم‌های نسخه Enterprise"""
-    
-    # رجکس‌های پیشرفته برای استخراج دقیق
-    PROXY_PATTERN = re.compile(r'(vmess|vless|trojan|ss)://[a-zA-Z0-9\-_@:/?=&%.]+')
-    URL_CLEANER = re.compile(r'https?://\S+')
+    # رجکس بهبود یافته برای تشخیص دقیق پروتکل‌ها
+    PROXY_PATTERN = re.compile(r'(vmess|vless|trojan|ss|tuic|hysteria2?)://[a-zA-Z0-9\-_@:/?=&%.#]+')
     MENTION_CLEANER = re.compile(r'@[a-zA-Z0-9_]+')
 
     @staticmethod
     def get_content_hash(text: str) -> str:
-        """ساخت اثر انگشت یکتا برای محتوا (جلوگیری از تکرار هوشمند)"""
-        # نرمال‌سازی: حذف فاصله‌های اضافه و کوچک کردن حروف
+        if not text: return "empty"
         normalized = re.sub(r'\s+', '', text.lower().strip())
         return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
 
     @classmethod
-    def process_proxy(cls, text: str) -> List[str]:
-        """استخراج کانفیگ‌های سالم"""
+    def extract_proxies(cls, text: str) -> list:
         if not text: return []
+        # جستجوی تمام کانفیگ‌ها
         configs = cls.PROXY_PATTERN.findall(text)
-        # حذف کانفیگ‌های ناقص یا خیلی کوتاه
-        valid_configs = [c for c in configs if len(c) > 50]
-        # حذف تکراری‌ها در یک پیام
+        # فیلتر کردن موارد ناقص
+        valid_configs = [c.strip() for c in configs if len(c) > 20]
         return list(set(valid_configs))
 
     @classmethod
-    def process_news(cls, text: str, blacklist: tuple) -> Optional[str]:
-        """تمیزکاری متن خبر"""
+    def clean_news(cls, text: str, blacklist: tuple) -> str:
         if not text: return None
         
-        # حذف کلمات بلک‌لیست
+        # 1. حذف عبارات بلک‌لیست
         for bad in blacklist:
             if bad in text:
                 text = text.replace(bad, "")
 
-        # حذف لینک‌ها و منشن‌ها
+        # 2. حذف منشن‌ها
         text = cls.MENTION_CLEANER.sub('', text)
         
-        # تمیزکاری نهایی
+        # 3. نرمال‌سازی خطوط
         text = re.sub(r'\n{3,}', '\n\n', text).strip()
         
-        if len(text) < 30: return None  # خبرهای خیلی کوتاه ارزش ندارند
+        if len(text) < 25: return None
         return text
 
     @staticmethod
-    def detect_topic(text: str) -> str:
-        """تشخیص موضوع برای اموجی هوشمند"""
+    def get_emoji(text: str) -> str:
         t = text.lower()
-        if any(x in t for x in ['فوری', 'breaking', 'urgent']): return '🔴'
+        if any(x in t for x in ['فوری', 'urgent']): return '🔴'
         if any(x in t for x in ['اقتصاد', 'دلار', 'طلا']): return '💰'
         if any(x in t for x in ['جنگ', 'حمله', 'war']): return '⚔️'
-        if any(x in t for x in ['تکنولوژی', 'ai', 'tech']): return '🤖'
+        if any(x in t for x in ['ورزش', 'فوتبال']): return '⚽️'
         return '📰'
 
 # ============================================================================
-# 4. DATABASE & MEMORY (حافظه بلند مدت)
+# 4. DATABASE
 # ============================================================================
 class Database:
     def __init__(self, uri: str):
@@ -189,238 +145,171 @@ class Database:
         self.history = self.db.history
 
     async def initialize(self):
-        # ساخت ایندکس برای حذف خودکار رکوردهای قدیمی (TTL)
         await self.history.create_index("created_at", expireAfterSeconds=Config.DUPLICATE_TTL)
         await self.history.create_index("content_hash", unique=True)
 
     async def is_duplicate(self, content_hash: str) -> bool:
-        """بررسی سریع در دیتابیس"""
-        found = await self.history.find_one({"content_hash": content_hash})
-        return found is not None
+        return await self.history.find_one({"content_hash": content_hash}) is not None
 
-    async def save_hash(self, content_hash: str, source: str):
-        """ذخیره هش برای آینده"""
+    async def save(self, content_hash: str, source: str):
         try:
             await self.history.insert_one({
                 "content_hash": content_hash,
                 "source": source,
                 "created_at": datetime.now(timezone.utc)
             })
-        except Exception:
-            pass  # اگر تکراری بود و همزمان ثبت شد، مشکلی نیست
+        except: pass
 
 # ============================================================================
-# 5. WORKER SYSTEM (سیستم صف و انتشار)
+# 5. QUEUE WORKER (The Publisher)
 # ============================================================================
 class QueueWorker:
-    def __init__(self, client: TelegramClient, config: Config, db: Database):
+    def __init__(self, client: TelegramClient, config: Config):
         self.client = client
         self.config = config
-        self.db = db
         self.queue = asyncio.Queue(maxsize=config.MAX_QUEUE_SIZE)
-        
-    async def add_task(self, task_type: str, data: dict):
-        """اضافه کردن به صف (بدون مسدود کردن برنامه)"""
-        try:
-            self.queue.put_nowait((task_type, data))
-        except asyncio.QueueFull:
-            logger.warning("Queue is full! Dropping oldest item.")
-            try:
-                self.queue.get_nowait()
-                self.queue.put_nowait((task_type, data))
-            except: pass
 
-    async def start_consumer(self):
-        """مصرف‌کننده صف (Publisher)"""
-        logger.info("👷 Worker started processing queue...")
-        
+    async def add_news(self, msg_obj, clean_text, source):
+        # ما فقط آبجکت پیام را ذخیره میکنیم، نه فایل را (صرفه جویی در رم)
+        await self.queue.put({
+            'type': 'news',
+            'msg_obj': msg_obj,
+            'text': clean_text,
+            'source': source
+        })
+
+    async def add_proxy(self, config_text, source):
+        await self.queue.put({
+            'type': 'proxy',
+            'config': config_text,
+            'source': source
+        })
+
+    async def start(self):
+        logger.info("👷 Worker Started & Ready...")
         while True:
-            # دریافت از صف
-            task_type, data = await self.queue.get()
-            
+            item = await self.queue.get()
             try:
-                if task_type == 'proxy':
-                    await self._publish_proxy(data)
-                elif task_type == 'news':
-                    await self._publish_news(data)
+                if item['type'] == 'news':
+                    await self._publish_news(item)
+                elif item['type'] == 'proxy':
+                    await self._publish_proxy(item)
                 
-                # استراحت هوشمند (جلوگیری از FloodWait)
-                await asyncio.sleep(random.uniform(2.0, 4.0))
+                # جلوگیری از FloodWait
+                await asyncio.sleep(random.uniform(2, 5))
                 
             except Exception as e:
                 logger.error(f"Publish Error: {e}")
             finally:
                 self.queue.task_done()
 
-    async def _publish_proxy(self, data):
-        config = data['config']
-        # فرمت شیک برای کپی کردن
-        msg = f"🔑 <b>Connect to Freedom</b>\n\n<code>{config}</code>{self.config.SIG_PROXY}"
-        await self.client.send_message(
-            self.config.TARGET_CHANNEL, 
-            msg, 
-            parse_mode='html', 
-            link_preview=False
-        )
-        logger.info(f"✅ Proxy Published (Source: {data['source']})")
-
-    async def _publish_news(self, data):
-        text = data['text']
-        media = data.get('media')
-        emoji = ContentEngine.detect_topic(text)
+    async def _publish_news(self, item):
+        text = item['text']
+        source = item['source']
+        msg_obj = item['msg_obj'] # پیام اصلی تلگرام
         
-        # فرمت خبر
+        emoji = ContentEngine.get_emoji(text)
         header = text.split('\n')[0]
         body = '\n'.join(text.split('\n')[1:])
-        formatted_text = f"<b>{emoji} {header}</b>\n\n{body}{self.config.SIG_NEWS}"
-        
-        if media:
-            await self.client.send_file(
+        caption = f"<b>{emoji} {header}</b>\n\n{body}{self.config.SIG_NEWS}"
+
+        # نکته طلایی: استفاده از msg_obj.media برای کپی مستقیم بدون دانلود
+        if msg_obj.media:
+            await self.client.send_message(
                 self.config.TARGET_CHANNEL,
-                media,
-                caption=formatted_text,
+                message=caption,
+                file=msg_obj.media, # تلگرام خودش مدیا را کپی می‌کند
                 parse_mode='html'
             )
         else:
             await self.client.send_message(
                 self.config.TARGET_CHANNEL,
-                formatted_text,
+                caption,
                 parse_mode='html',
                 link_preview=False
             )
-        logger.info(f"📰 News Published (Source: {data['source']})")
+        logger.info(f"✅ News Sent (Src: {source})")
 
-
-from datetime import timedelta  # این خط را حتما به بالای فایل اضافه کنید اگر نیست
+    async def _publish_proxy(self, item):
+        conf = item['config']
+        txt = f"🔑 <b>Connect to Freedom</b>\n\n<code>{conf}</code>{self.config.SIG_PROXY}"
+        await self.client.send_message(
+            self.config.TARGET_CHANNEL,
+            txt,
+            parse_mode='html',
+            link_preview=False
+        )
+        logger.info(f"✅ Proxy Sent (Src: {item['source']})")
 
 # ============================================================================
-# 6. MAIN CONTROLLER (کنترل‌کننده اصلی با قابلیت بازگشت به عقب)
+# 6. MAIN LOGIC
 # ============================================================================
+async def process_message(message, source, db: Database, worker: QueueWorker, config: Config):
+    """تابع مرکزی پردازش پیام (هم برای Backfill هم Realtime)"""
+    text = message.text or ""
+    
+    # 1. پردازش پروکسی
+    if source in config.PROXY_CHANNELS:
+        proxies = ContentEngine.extract_proxies(text)
+        for conf in proxies:
+            h = ContentEngine.get_content_hash(conf)
+            if not await db.is_duplicate(h):
+                await db.save(h, source)
+                await worker.add_proxy(conf, source)
+
+    # 2. پردازش خبر
+    elif source in config.NEWS_CHANNELS:
+        clean_text = ContentEngine.clean_news(text, config.BLACKLIST)
+        if clean_text:
+            h = ContentEngine.get_content_hash(clean_text)
+            if not await db.is_duplicate(h):
+                await db.save(h, source)
+                # کل آبجکت پیام را به ورکر میدهیم
+                await worker.add_news(message, clean_text, source)
+
 async def main():
     config = Config.from_env()
-    
-    # اتصال به دیتابیس
     db = Database(config.MONGO_URI)
     await db.initialize()
     
-    # راه اندازی کلاینت تلگرام
-    client = TelegramClient(
-        StringSession(config.STRING_SESSION),
-        config.API_ID,
-        config.API_HASH
-    )
-    
-    # راه اندازی ورکر
-    worker = QueueWorker(client, config, db)
+    client = TelegramClient(StringSession(config.STRING_SESSION), config.API_ID, config.API_HASH)
+    worker = QueueWorker(client, config)
     
     await client.start()
-    logger.info("🚀 NewsRadar v7.1 Started!")
-
-    # ====================================================================
-    # ⏳ بخش جدید: ماشین زمان (بررسی ۱ ساعت گذشته)
-    # ====================================================================
-    logger.info("⏳ Starting Backfill: Checking last 1 hour messages...")
     
-    # زمان ۱ ساعت پیش
+    # ⚡️ 1. اجرای Worker قبل از هر کاری
+    asyncio.create_task(worker.start())
+
+    # ⏳ 2. بخش Backfill (یک ساعت گذشته)
+    logger.info("⏳ Starting Backfill...")
     one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+    all_channels = config.NEWS_CHANNELS + config.PROXY_CHANNELS
     
-    # ترکیب همه کانال‌ها
-    all_targets = config.NEWS_CHANNELS + config.PROXY_CHANNELS
-    
-    for channel_name in all_targets:
+    for channel in all_channels:
         try:
-            # دریافت پیام‌های ۱ ساعت اخیر (Reverse=True یعنی از قدیمی به جدید)
-            async for message in client.iter_messages(channel_name, offset_date=one_hour_ago, reverse=True):
-                text = message.text or ""
-                
-                # --- منطق پروکسی ---
-                if channel_name in config.PROXY_CHANNELS:
-                    configs = ContentEngine.process_proxy(text)
-                    for conf in configs:
-                        conf_hash = ContentEngine.get_content_hash(conf)
-                        if not await db.is_duplicate(conf_hash):
-                            await db.save_hash(conf_hash, channel_name)
-                            await worker.add_task('proxy', {'config': conf, 'source': channel_name})
-                
-                # --- منطق خبر ---
-                elif channel_name in config.NEWS_CHANNELS:
-                    clean_text = ContentEngine.process_news(text, config.BLACKLIST)
-                    if clean_text:
-                        news_hash = ContentEngine.get_content_hash(clean_text)
-                        if not await db.is_duplicate(news_hash):
-                            await db.save_hash(news_hash, channel_name)
-                            
-                            media = None
-                            if message.media:
-                                try:
-                                    media = await message.download_media(file=bytes)
-                                except: pass
-                            
-                            await worker.add_task('news', {
-                                'text': clean_text, 
-                                'media': media, 
-                                'source': channel_name
-                            })
-            
-            # استراحت کوتاه بین کانال‌ها (جلوگیری از فشار به تلگرام)
-            await asyncio.sleep(1.5)
-            
+            async for msg in client.iter_messages(channel, offset_date=one_hour_ago, reverse=True):
+                await process_message(msg, channel, db, worker, config)
+            await asyncio.sleep(1) # استراحت بین کانال‌ها
         except Exception as e:
-            logger.error(f"Backfill Error on {channel_name}: {e}")
+            logger.error(f"Backfill error on {channel}: {e}")
+            
+    logger.info("✅ Backfill Done. Listening for new messages...")
 
-    logger.info("✅ Backfill Complete! Switching to Real-time Monitor.")
-    # اجرای همزمان مصرف‌کننده صف (که الان پر از پیام‌های ۱ ساعت گذشته است)
-    asyncio.create_task(worker.start_consumer())
-
-    # ====================================================================
-    # 📡 بخش آنلاین: گوش دادن به پیام‌های جدید (Real-time)
-    # ====================================================================
-    @client.on(events.NewMessage(chats=all_targets))
+    # 📡 3. بخش Real-time
+    @client.on(events.NewMessage(chats=all_channels))
     async def handler(event):
         try:
             chat = await event.get_chat()
-            channel_name = chat.username or chat.title
-            text = event.message.text or ""
-            
-            # دقیقاً همان منطق بالا تکرار می‌شود
-            if channel_name in config.PROXY_CHANNELS:
-                configs = ContentEngine.process_proxy(text)
-                for conf in configs:
-                    conf_hash = ContentEngine.get_content_hash(conf)
-                    if not await db.is_duplicate(conf_hash):
-                        await db.save_hash(conf_hash, channel_name)
-                        await worker.add_task('proxy', {'config': conf, 'source': channel_name})
-            
-            elif channel_name in config.NEWS_CHANNELS:
-                clean_text = ContentEngine.process_news(text, config.BLACKLIST)
-                if clean_text:
-                    news_hash = ContentEngine.get_content_hash(clean_text)
-                    if not await db.is_duplicate(news_hash):
-                        await db.save_hash(news_hash, channel_name)
-                        
-                        media = None
-                        if event.message.media:
-                            media = await event.message.download_media(file=bytes)
-                        
-                        await worker.add_task('news', {
-                            'text': clean_text, 
-                            'media': media, 
-                            'source': channel_name
-                        })
-
+            source = chat.username or chat.title
+            await process_message(event.message, source, db, worker, config)
         except Exception as e:
-            logger.error(f"Real-time Handler Error: {e}")
+            logger.error(f"Handler Error: {e}")
 
-    # اجرای مداوم
     await client.run_until_disconnected()
 
 if __name__ == "__main__":
     keep_alive()
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
-    except Exception as e:
-        logger.critical(f"Fatal Error: {e}")
-
-
+    except KeyboardInterrupt: pass
+    except Exception as e: logger.critical(f"Fatal: {e}")
