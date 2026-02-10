@@ -95,10 +95,12 @@ class Config:
     # ⚠️ مهم: شناسه (ID) عددی کانال‌های خود را اینجا وارد کنید
     NEWS_SOURCES: Dict[int, str] = field(default_factory=lambda: {
         -1001056129826: "khabarfuri", 
+        -1002908786619: "GTAVFREEE", 
     })
     
     PROXY_SOURCES: Dict[int, str] = field(default_factory=lambda: {
         -1003653053311: "V2rrayVPN",
+        -1002908786619: "GTAVFREEE", 
     })
     
     PROXY_FILE_EXTENSIONS: tuple = ('.npvt', '.pv', '.conf', '.ovpn')
@@ -568,6 +570,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt: pass
     except Exception as e: logger.critical(f"Fatal: {e}")
+
 
 
 
