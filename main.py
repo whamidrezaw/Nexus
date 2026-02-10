@@ -6,6 +6,7 @@ Features:
 - Real-time Metrics (Observability)
 - Integrated Discovery Pipeline (With Memory Safety)
 - Robust Retry Logic & Error Handling
+- Telegram Channel Logging (New Feature)
 """
 
 import os
@@ -40,6 +41,35 @@ logging.basicConfig(
 )
 logger = logging.getLogger("NewsRadar-v9.3")
 
+# --- کلاس جدید برای ارسال لاگ به کانال تلگرام ---
+class TelegramLogHandler(logging.Handler):
+    """
+    این کلاس لاگ‌های مهم را به کانال تلگرام ارسال می‌کند.
+    """
+    def __init__(self, client, chat_id):
+        super().__init__()
+        self.client = client
+        self.chat_id = chat_id
+
+    def emit(self, record):
+        # جلوگیری از ارسال لاگ‌های خود کتابخانه Telethon (برای جلوگیری از لوپ)
+        if "telethon" in record.name.lower(): return
+        
+        try:
+            msg = self.format(record)
+            # ارسال پیام به صورت Task جداگانه تا سرعت برنامه اصلی گرفته نشود
+            if self.client.is_connected():
+                asyncio.create_task(
+                    self.client.send_message(
+                        self.chat_id, 
+                        f"<code>{msg}</code>", 
+                        parse_mode='html'
+                    )
+                )
+        except:
+            # اگر خطایی در ارسال لاگ بود، نادیده بگیر تا برنامه متوقف نشود
+            pass
+
 # ============================================================================
 # 2. CONFIGURATION
 # ============================================================================
@@ -57,18 +87,18 @@ class Config:
     PUBLISH_QUEUE_SIZE: int = 1000
     DUPLICATE_TTL: int = 86400 * 3
     
+    # === تنظیمات لاگ تلگرام ===
+    # آیدی کانال لاگ خود را اینجا وارد کنید (مثال: -100123456789)
+    # اکانت ربات باید در این کانال ادمین باشد
+    LOG_CHANNEL_ID: int = -1003821386891  # <--- اینجا را تغییر دهید
+    
     # ⚠️ مهم: شناسه (ID) عددی کانال‌های خود را اینجا وارد کنید
     NEWS_SOURCES: Dict[int, str] = field(default_factory=lambda: {
-
-        -1001056129826: "khabarfuri", # 
-
-        
+        -1001056129826: "khabarfuri", 
     })
     
     PROXY_SOURCES: Dict[int, str] = field(default_factory=lambda: {
-        -1003653053311: "V2rrayVPN",     # 
-
-        
+        -1003653053311: "V2rrayVPN",
     })
     
     PROXY_FILE_EXTENSIONS: tuple = ('.npvt', '.pv', '.conf', '.ovpn')
@@ -92,12 +122,19 @@ class Config:
         target = os.getenv("TARGET_CHANNEL", "")
         try: target = int(target)
         except: pass 
+        
+        # تلاش برای خواندن کانال لاگ از Environment Variables
+        log_channel = os.getenv("LOG_CHANNEL_ID", "")
+        try: log_channel = int(log_channel)
+        except: log_channel = None # اگر ست نشده بود، نادیده بگیر
+
         return cls(
             API_ID=int(os.getenv("TELEGRAM_API_ID", "0")),
             API_HASH=os.getenv("TELEGRAM_API_HASH", ""),
             STRING_SESSION=os.getenv("STRING_SESSION", ""),
             TARGET_CHANNEL=target,
             MONGO_URI=os.getenv("MONGO_URI", "mongodb://localhost:27017"),
+            LOG_CHANNEL_ID=log_channel if log_channel else cls.LOG_CHANNEL_ID
         )
 
 # ============================================================================
@@ -402,6 +439,22 @@ async def main():
     pipeline = PipelineManager(client, config, db)
     
     await client.start()
+    
+    # ------------------------------------------------------------
+    # فعال‌سازی لاگ تلگرام (بخش جدید)
+    # ------------------------------------------------------------
+    if config.LOG_CHANNEL_ID:
+        try:
+            tg_handler = TelegramLogHandler(client, config.LOG_CHANNEL_ID)
+            tg_handler.setLevel(logging.INFO) # فقط لاگ‌های مهم و اطلاعاتی
+            formatter = logging.Formatter('<b>%(levelname)s</b>: %(message)s')
+            tg_handler.setFormatter(formatter)
+            logger.addHandler(tg_handler)
+            logger.info(f"✅ لاگ‌های سیستم به کانال {config.LOG_CHANNEL_ID} متصل شد.")
+        except Exception as e:
+            print(f"خطا در اتصال لاگ تلگرام: {e}")
+    # ------------------------------------------------------------
+
     await pipeline.start_processors()
 
     logger.info("⏳ Starting Backfill...")
@@ -425,7 +478,6 @@ async def main():
                 
                 if chat_id in config.PROXY_SOURCES:
                     payload['type'] = 'raw_proxy'
-                    # ✅ FIXED INDENTATION HERE
                     if msg.file and msg.file.name:
                         if any(msg.file.name.lower().endswith(ext) for ext in config.PROXY_FILE_EXTENSIONS):
                             payload['file_name'] = msg.file.name.lower()
@@ -470,7 +522,6 @@ async def main():
             }
             
             if is_proxy and event.message.file and event.message.file.name:
-                # ✅ FIXED INDENTATION HERE
                 if any(event.message.file.name.lower().endswith(ext) for ext in config.PROXY_FILE_EXTENSIONS):
                     payload['file_name'] = event.message.file.name.lower()
                     payload['file_size'] = event.message.file.size
@@ -491,6 +542,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt: pass
     except Exception as e: logger.critical(f"Fatal: {e}")
-
-
-
