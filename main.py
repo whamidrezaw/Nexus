@@ -59,20 +59,15 @@ class Config:
     
     # ⚠️ مهم: شناسه (ID) عددی کانال‌های خود را اینجا وارد کنید
     NEWS_SOURCES: Dict[int, str] = field(default_factory=lambda: {
-        -1001001976122: "Tasnimnews",   # مثال (جایگزین کنید)
+
         -1001056129826: "khabarfuri", # 
 
-    -1001002062924: "Khabar_Fouri", # 
-    -1001006430686: "bbcpersian", # 
-   -1002460426070: "KHABAREROOZ_IR", # 
         
     })
     
     PROXY_SOURCES: Dict[int, str] = field(default_factory=lambda: {
-        -1002258272508: "mitivpn",     # 
-        -1001346269822: "iMTProto",      # 
- -1002727954618: "Proxymelimon",      # 
- -1001482133990: "napsternetv",      # 
+        -1003653053311: "V2rrayVPN",     # 
+
         
     })
     
@@ -496,5 +491,6 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt: pass
     except Exception as e: logger.critical(f"Fatal: {e}")
+
 
 
